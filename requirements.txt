@@ -15,6 +15,6 @@ chromadb==0.5.23
 anthropic>=0.69.0
 requests==2.32.3
 python-dotenv==1.0.1
-pydantic==2.10.4
+pydantic==2.13.4
 beautifulsoup4==4.12.3
 pytest==8.3.4
