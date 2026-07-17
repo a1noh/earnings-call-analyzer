@@ -211,11 +211,49 @@ def render_kpis(state: dict) -> None:
     c[4].metric("Overall eval", f"{overall:.2f}" if overall is not None else "—")
 
 
-def render_dashboard(state: dict, quarter_label: str, compact: bool = False) -> None:
-    """The main dashboard for a single quarter: KPIs + card grid + details."""
-    st.markdown(f"### {state.get('ticker', '')} · {quarter_label}")
-    render_kpis(state)
+def _placeholder_card(title: str) -> None:
+    with st.container(border=True):
+        st.markdown(f"#### {title}")
+        st.caption("Awaiting analysis…")
+
+
+def _skeleton_grid(compact: bool) -> None:
+    titles = [
+        "📈 Revenue Guidance", "🎯 Management Sentiment",
+        "⚠️ Risk Factors", "🔀 Quarter-over-Quarter",
+    ]
+    if compact:
+        for t in titles:
+            _placeholder_card(t)
+    else:
+        left, right = st.columns(2)
+        with left:
+            _placeholder_card(titles[0])
+            _placeholder_card(titles[1])
+        with right:
+            _placeholder_card(titles[2])
+            _placeholder_card(titles[3])
+
+
+def render_dashboard(state: dict, quarter_label: str | None = None, compact: bool = False) -> None:
+    """The main dashboard: KPI header + card grid + details.
+
+    The layout is ALWAYS rendered — when no analysis has run yet it shows a
+    skeleton (dashes + placeholder cards) and only the content fills in on search.
+    """
+    if state and quarter_label:
+        st.markdown(f"### {state.get('ticker', '')} · {quarter_label}")
+    else:
+        st.markdown("### Dashboard")
+        st.caption("Enter a ticker in the sidebar and click **Analyze** to populate the cards.")
+    render_kpis(state or {})
     st.divider()
+
+    if not state:
+        _skeleton_grid(compact)
+        with st.expander("🧪 Eval details"):
+            st.caption("Awaiting analysis…")
+        return
 
     if state.get("errors"):
         st.warning("Some steps had issues:\n" + "\n".join(f"- {e}" for e in state["errors"]))
@@ -408,21 +446,6 @@ def ingest_ticker(ticker: str) -> None:
         status.update(label=f"{ticker} ready", state="complete", expanded=False)
 
 
-def render_empty_state() -> None:
-    st.markdown("## 👋 Welcome to the Earnings Call Analyzer")
-    st.markdown(
-        "Enter a stock ticker in the **sidebar** and click **Analyze** to build a "
-        "dashboard of guidance, risks, sentiment, and quarter-over-quarter changes — "
-        "each grounded in source quotes and scored by an eval layer."
-    )
-    st.markdown("**Try:**  `AAPL` · `MSFT` · `NVDA` · `AMZN` · `GOOGL`")
-    st.info(
-        "Free EDGAR mode analyzes real 8-K earnings press releases (prepared remarks, "
-        "no analyst Q&A). Add a paid FMP key later for full transcripts + Q&A — no code "
-        "change needed."
-    )
-
-
 # --- sidebar + page ---------------------------------------------------------
 with st.sidebar:
     st.markdown("## 📊 Earnings Call Analyzer")
@@ -449,9 +472,10 @@ else:
     if submitted and ticker_in.strip() and not missing:
         ingest_ticker(ticker_in.strip().upper())
 
-    if not st.session_state.ingest:
-        render_empty_state()
-    else:
+    active_state: dict = {}
+    active_label = None
+    compare_pair = None
+    if st.session_state.ingest:
         with st.sidebar:
             companies = sorted(st.session_state.ingest.keys())
             active = st.selectbox("Company", companies, key="sel_company")
@@ -472,13 +496,21 @@ else:
         y, q = quarters[labels.index(pick)]
         if compare and pick2:
             y2, q2 = quarters[labels.index(pick2)]
-            state_a = analyze_quarter(active, y, q)
-            state_b = analyze_quarter(active, y2, q2)
-            col_a, col_b = st.columns(2)
-            with col_a:
-                render_dashboard(state_a, pick, compact=True)
-            with col_b:
-                render_dashboard(state_b, pick2, compact=True)
+            compare_pair = (
+                analyze_quarter(active, y, q), pick,
+                analyze_quarter(active, y2, q2), pick2,
+            )
         else:
-            state = analyze_quarter(active, y, q)
-            render_dashboard(state, pick)
+            active_state = analyze_quarter(active, y, q)
+            active_label = pick
+
+    # The dashboard layout is always rendered — a skeleton until analysis fills it.
+    if compare_pair:
+        sa, la, sb, lb = compare_pair
+        col_a, col_b = st.columns(2)
+        with col_a:
+            render_dashboard(sa, la, compact=True)
+        with col_b:
+            render_dashboard(sb, lb, compact=True)
+    else:
+        render_dashboard(active_state, active_label)
