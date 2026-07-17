@@ -8,7 +8,7 @@
 #     chromadb's. Stick to chromadb's onnx default embedding function.
 #   * First run downloads the MiniLM model (~90MB).
 
-streamlit==1.40.2
+streamlit==1.59.2
 langgraph==0.2.60
 langchain-core==0.3.28
 chromadb==0.5.23
