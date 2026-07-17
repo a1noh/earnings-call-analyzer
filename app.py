@@ -16,6 +16,19 @@ import os
 
 import streamlit as st
 
+# On Streamlit Community Cloud, secrets live in st.secrets. Bridge them into
+# os.environ *before* importing config (which reads env vars) so the same
+# env-based configuration works both locally (.env) and on deploy (Secrets).
+try:
+    for _k in (
+        "ANTHROPIC_API_KEY", "FMP_API_KEY", "SEC_USER_AGENT",
+        "APP_PASSWORD", "ANALYSIS_MODEL", "JUDGE_MODEL",
+    ):
+        if _k in st.secrets and not os.environ.get(_k):
+            os.environ[_k] = str(st.secrets[_k])
+except Exception:
+    pass  # no secrets configured (e.g. local dev without a secrets.toml)
+
 import config
 from agent.graph import NODE_LABELS, NODE_ORDER, run_analysis, stream_analysis
 from data.edgar_client import EdgarError
