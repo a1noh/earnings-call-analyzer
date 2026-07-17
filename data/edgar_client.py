@@ -138,7 +138,9 @@ class EdgarClient:
 
     @staticmethod
     def _strip_html(html: str) -> str:
-        soup = BeautifulSoup(html, "lxml")
+        # Use the stdlib parser so we don't depend on lxml (a C-extension that can
+        # fail to build on some hosts). Fine for plain text extraction.
+        soup = BeautifulSoup(html, "html.parser")
         for tag in soup(["script", "style"]):
             tag.decompose()
         text = soup.get_text(separator="\n")
