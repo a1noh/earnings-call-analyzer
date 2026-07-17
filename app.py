@@ -265,34 +265,149 @@ def ingest_ticker(ticker: str) -> None:
         analyze_quarter(ticker, year, quarter, live=True)
 
 
-# --- page -------------------------------------------------------------------
-st.title("📊 Earnings Call Analyzer")
-st.caption(
-    "Agentic RAG over earnings calls — LangGraph + Claude + ChromaDB. "
-    "Extracts guidance, risks, sentiment, and quarter-over-quarter changes, "
-    "each grounded in source quotes and scored by an eval layer."
-)
+# --- architecture view ------------------------------------------------------
+_ARCH_DOT = """
+digraph G {
+  rankdir=TB;
+  bgcolor="transparent";
+  node [shape=box, style="rounded,filled", fillcolor="#1a1f2b",
+        fontcolor="#e6e9ef", color="#4c9be8", fontname="Helvetica", fontsize=11];
+  edge [color="#7f8ea3", fontcolor="#9aa4b2", fontname="Helvetica", fontsize=9];
 
-missing = config.missing_keys()
-if missing:
-    st.error(
-        "Missing required environment variable(s): "
-        + ", ".join(missing)
-        + ". Copy `.env.example` to `.env` and fill in your keys, then restart."
+  ticker [label="Ticker (e.g. AAPL)", fillcolor="#22303f"];
+  router [label="source_router\\n(tries real data, detects gating)"];
+  fmp    [label="FMP transcript\\n(incl. analyst Q&A)"];
+  edgar  [label="SEC EDGAR 8-K\\n(press release, no Q&A)"];
+  chunk  [label="Section-aware chunker\\n(prepared / qa / press_release)"];
+  chroma [label="ChromaDB\\n(local onnx MiniLM embeddings)", fillcolor="#22303f"];
+  g [label="Guidance node"];
+  r [label="Risk node"];
+  s [label="Sentiment node"];
+  q [label="QoQ node"];
+  e [label="Eval scorer\\n(groundedness / completeness / consistency)"];
+  ui [label="Streamlit UI\\n(panels + inline quotes + eval badges)", fillcolor="#22303f"];
+
+  ticker -> router;
+  router -> fmp   [label="ok"];
+  router -> edgar [label="gated / no key"];
+  fmp -> chunk;
+  edgar -> chunk;
+  chunk -> chroma;
+
+  chroma -> g;
+  chroma -> r [style=dashed, label="RAG"];
+  chroma -> s [style=dashed];
+  chroma -> q [style=dashed];
+  g -> r -> s -> q -> e -> ui;
+}
+"""
+
+_ARCH_ASCII = """Ticker -> source_router --(ok)------> FMP transcript (incl. Q&A) ---+
+                       \\--(gated/no key)-> SEC EDGAR 8-K (no Q&A) ----+
+                                                                       v
+                                                        Section-aware chunker
+                                                                       v
+                                             ChromaDB (onnx MiniLM, local)
+                                                                       v
+   LangGraph agent (each node RAG-retrieves then calls Claude):
+     Guidance -> Risk -> Sentiment -> QoQ -> Eval scorer
+                                                                       v
+                     Streamlit UI: panels + inline source quotes + eval badges
+"""
+
+
+def render_architecture() -> None:
+    st.markdown("### 🏗️ How this app is built")
+    st.caption(
+        "An agentic RAG pipeline: a multi-source ingestion router feeds a local "
+        "vector store, a LangGraph agent runs four grounded analysis nodes, and an "
+        "eval layer scores the output — all rendered in a dark Streamlit UI."
+    )
+    try:
+        st.graphviz_chart(_ARCH_DOT, use_container_width=True)
+    except Exception:
+        st.code(_ARCH_ASCII, language="text")
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown("#### 1 · Data ingestion (`data/`)")
+        st.markdown(
+            "- **`source_router`** tries FMP for a real transcript, detects gating "
+            "at runtime, and falls back to SEC EDGAR — **never mocks data**.\n"
+            "- **`fmp_client`** fetches transcript bodies and classifies gating "
+            "(HTTP 401/402/403, error bodies, or empty payloads).\n"
+            "- **`edgar_client`** resolves ticker→CIK, finds 8-K Item 2.02 filings, "
+            "and extracts the Exhibit 99.1 earnings press release."
+        )
+        st.markdown("#### 2 · RAG (`ingest/`)")
+        st.markdown(
+            "- **`chunker`** splits on speaker/section boundaries and tags each chunk "
+            "(`prepared_remarks` / `qa` / `press_release`).\n"
+            "- **`vectorstore`** is ChromaDB with the on-device **onnx MiniLM** "
+            "embedder — no embedding API, no cloud. One collection per company, "
+            "filtered by quarter."
+        )
+    with col_b:
+        st.markdown("#### 3 · Agent (`agent/`)")
+        st.markdown(
+            "- A **LangGraph `StateGraph`** runs nodes in sequence: "
+            "**guidance → risk → sentiment → QoQ → eval**.\n"
+            "- Each node retrieves quarter-scoped chunks (RAG) and calls Claude "
+            "(`claude-opus-4-8`) for **structured JSON**, backed by verbatim quotes.\n"
+            "- Reasoning steps (queries, sections, chunk counts) are surfaced in the UI."
+        )
+        st.markdown("#### 4 · Eval + UI")
+        st.markdown(
+            "- **Eval layer** scores *groundedness* (quotes must trace to retrieved "
+            "text), *completeness* (all four dimensions), and *consistency* (QoQ cites "
+            "both quarters; sentiment agrees with guidance), plus an optional "
+            "`claude-haiku-4-5` judge.\n"
+            "- **Streamlit UI** streams live pipeline progress, renders four panels "
+            "with inline quotes and grounding badges, and compares two quarters."
+        )
+
+    st.markdown("#### Design notes")
+    st.markdown(
+        "- **Honest data:** free FMP gates transcript bodies and EDGAR has no "
+        "transcripts, so free runs use 8-K press releases (no Q&A). The same code "
+        "**auto-upgrades** to full transcripts if a paid FMP key appears.\n"
+        "- **Resilience:** the Claude wrapper uses structured outputs when available "
+        "and falls back to prompt-JSON; API errors degrade to handled messages, not "
+        "crashes.\n"
+        "- **Cost:** shared per-quarter context is prompt-cached across the four "
+        "nodes (~0.1x input cost on nodes 2–4)."
+    )
+    st.markdown(
+        "**Stack:** Python 3.11 · Streamlit · LangGraph · Anthropic Claude "
+        "(`claude-opus-4-8` + `claude-haiku-4-5` judge) · ChromaDB (onnx MiniLM) · "
+        "Financial Modeling Prep + SEC EDGAR."
     )
 
-with st.form("ticker_form"):
-    col1, col2 = st.columns([3, 1])
-    ticker_in = col1.text_input("Stock ticker", value="", placeholder="AAPL, MSFT, NVDA…")
-    submitted = col2.form_submit_button("Analyze", use_container_width=True)
 
-if submitted and ticker_in.strip():
+def render_analyzer() -> None:
+    missing = config.missing_keys()
     if missing:
-        st.stop()
-    ingest_ticker(ticker_in.strip().upper())
+        st.error(
+            "Missing required environment variable(s): "
+            + ", ".join(missing)
+            + ". Copy `.env.example` to `.env` and fill in your keys, then restart."
+        )
 
-# --- results for any ingested ticker ---------------------------------------
-if st.session_state.ingest:
+    with st.form("ticker_form"):
+        col1, col2 = st.columns([3, 1])
+        ticker_in = col1.text_input(
+            "Stock ticker", value="", placeholder="AAPL, MSFT, NVDA…"
+        )
+        submitted = col2.form_submit_button("Analyze", use_container_width=True)
+
+    if submitted and ticker_in.strip():
+        if missing:
+            st.stop()
+        ingest_ticker(ticker_in.strip().upper())
+
+    if not st.session_state.ingest:
+        return
+
     ticker = st.selectbox(
         "Company", sorted(st.session_state.ingest.keys()), key="active_ticker"
     )
@@ -331,3 +446,18 @@ if st.session_state.ingest:
                 with col_b:
                     st.subheader(pb)
                     render_results(state_b)
+
+
+# --- page -------------------------------------------------------------------
+st.title("📊 Earnings Call Analyzer")
+st.caption(
+    "Agentic RAG over earnings calls — LangGraph + Claude + ChromaDB. "
+    "Extracts guidance, risks, sentiment, and quarter-over-quarter changes, "
+    "each grounded in source quotes and scored by an eval layer."
+)
+
+tab_analyzer, tab_arch = st.tabs(["🔍 Analyzer", "🏗️ Architecture"])
+with tab_analyzer:
+    render_analyzer()
+with tab_arch:
+    render_architecture()
