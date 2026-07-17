@@ -1,14 +1,19 @@
 version: 2
 updates:
-  # Keep Python dependencies current.
+  # Python deps: monthly, and only safe (non-major) bumps. Major upgrades
+  # (e.g. chromadb 0.5 -> 1.x, langgraph 0.2 -> 1.x) change APIs and can break
+  # the app, so they are ignored here — bump those deliberately with testing.
   - package-ecosystem: pip
     directory: "/"
     schedule:
-      interval: weekly
+      interval: monthly
     open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
-  # Keep GitHub Actions versions current.
+  # GitHub Actions: monthly.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: weekly
+      interval: monthly
