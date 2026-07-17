@@ -1,11 +1,10 @@
-"""Earnings Call Analyzer — Streamlit UI.
+"""Earnings Call Analyzer — Streamlit dashboard UI.
 
-A dark, finance-styled front end over the RAG + LangGraph pipeline:
-  * ticker input at the top,
-  * live step-by-step pipeline progress (not a spinner),
-  * four collapsible analysis panels with inline source quotes,
-  * eval quality badges on each panel + an overall scorecard,
-  * a quarter selector to analyze any quarter and compare two side by side.
+A dark, finance-styled dashboard over the RAG + LangGraph pipeline:
+  * sidebar controls (ticker input, company + quarter selectors, compare toggle),
+  * a KPI header (sentiment, guidance, risks, groundedness, overall eval),
+  * a grid of insight cards, each with inline source quotes and a grounding badge,
+  * an Architecture view, and a password gate for deployment.
 
 Run:  streamlit run app.py
 """
@@ -15,6 +14,10 @@ import hmac
 import os
 
 import streamlit as st
+
+# set_page_config MUST be the first Streamlit command (before any st.* call,
+# including reading st.secrets below).
+st.set_page_config(page_title="Earnings Call Analyzer", page_icon="📊", layout="wide")
 
 # On Streamlit Community Cloud, secrets live in st.secrets. Bridge them into
 # os.environ *before* importing config (which reads env vars) so the same
@@ -35,21 +38,19 @@ from data.edgar_client import EdgarError
 from data.source_router import SourceRouter
 from ingest import vectorstore
 
-st.set_page_config(page_title="Earnings Call Analyzer", page_icon="📊", layout="wide")
+# --- session state ----------------------------------------------------------
+st.session_state.setdefault("ingest", {})     # ticker -> {source, source_label, note, quarters}
+st.session_state.setdefault("results", {})    # (ticker, year, quarter) -> final state
 
 
 # --- optional password gate -------------------------------------------------
 def _app_password() -> str | None:
-    """Resolve the gate password from Streamlit secrets (cloud) or env (.env).
-
-    Returns None when no password is configured, which leaves the app open — handy
-    for local development. Set APP_PASSWORD to require a login before deploying.
-    """
+    """Resolve the gate password from Streamlit secrets (cloud) or env (.env)."""
     try:
         if "APP_PASSWORD" in st.secrets:
             return st.secrets["APP_PASSWORD"]
     except Exception:
-        pass  # no secrets.toml present
+        pass
     return os.getenv("APP_PASSWORD")
 
 
@@ -57,10 +58,9 @@ def require_auth() -> None:
     """Block the app behind a shared password when APP_PASSWORD is set."""
     password = _app_password()
     if not password:
-        return  # open (no gate configured)
+        return
     if st.session_state.get("authed"):
         return
-
     st.markdown("## 🔒 Earnings Call Analyzer")
     st.caption("This app is password protected.")
     entered = st.text_input("Password", type="password", key="pw_input")
@@ -75,15 +75,11 @@ def require_auth() -> None:
 
 require_auth()
 
-# --- session state ----------------------------------------------------------
-st.session_state.setdefault("ingest", {})     # ticker -> {source, source_label, note, quarters}
-st.session_state.setdefault("results", {})    # (ticker, year, quarter) -> final state
-
 
 # --- small render helpers ---------------------------------------------------
 def grounding_badge(frac) -> str:
     if frac is None:
-        return "grounding: n/a"
+        return "grounding n/a"
     pct = int(frac * 100)
     dot = "🟢" if frac >= 0.8 else "🟡" if frac >= 0.5 else "🔴"
     return f"{dot} {pct}% grounded"
@@ -94,103 +90,73 @@ def _quote(text: str) -> None:
 
 
 def render_guidance(g: dict, badge: str) -> None:
-    with st.expander(f"📈 Revenue Guidance  ·  {badge}", expanded=True):
-        if not g:
-            st.info("No guidance produced.")
-            return
-        st.markdown(f"**Revenue guidance:** {g.get('revenue_guidance', '—')}")
-        st.markdown(f"**EPS / margin guidance:** {g.get('eps_guidance', '—')}")
-        st.markdown(f"**Direction:** `{g.get('direction', 'unknown')}`")
-        fs = g.get("forward_statements", []) or []
-        if fs:
-            st.markdown("**Forward-looking statements:**")
-            for item in fs:
-                st.markdown(f"- {item.get('statement', '')}")
-                _quote(item.get("quote", ""))
-
-
-def render_risks(r: dict, badge: str) -> None:
-    with st.expander(f"⚠️ Risk Factors  ·  {badge}", expanded=True):
-        risks = (r or {}).get("risks", []) or []
-        if not risks:
-            st.info("No risks detected.")
-            return
-        sev_color = {"high": "🔴", "medium": "🟠", "low": "🟡"}
-        for item in risks:
-            flag = "🆕" if item.get("is_new_or_escalating") else ""
-            sev = item.get("severity", "low")
-            st.markdown(
-                f"{sev_color.get(sev, '⚪')} **{item.get('risk', '')}** "
-                f"· severity: `{sev}` {flag}"
-            )
+    st.markdown(f"#### 📈 Revenue Guidance")
+    st.caption(badge)
+    if not g:
+        st.info("No guidance produced.")
+        return
+    st.markdown(f"**Revenue:** {g.get('revenue_guidance', '—')}")
+    st.markdown(f"**EPS / margin:** {g.get('eps_guidance', '—')}")
+    st.markdown(f"**Direction:** `{g.get('direction', 'unknown')}`")
+    fs = g.get("forward_statements", []) or []
+    if fs:
+        st.markdown("**Forward-looking statements:**")
+        for item in fs:
+            st.markdown(f"- {item.get('statement', '')}")
             _quote(item.get("quote", ""))
 
 
+def render_risks(r: dict, badge: str) -> None:
+    st.markdown(f"#### ⚠️ Risk Factors")
+    st.caption(badge)
+    risks = (r or {}).get("risks", []) or []
+    if not risks:
+        st.info("No risks detected.")
+        return
+    sev_color = {"high": "🔴", "medium": "🟠", "low": "🟡"}
+    for item in risks:
+        flag = "🆕" if item.get("is_new_or_escalating") else ""
+        sev = item.get("severity", "low")
+        st.markdown(
+            f"{sev_color.get(sev, '⚪')} **{item.get('risk', '')}** "
+            f"· `{sev}` {flag}"
+        )
+        _quote(item.get("quote", ""))
+
+
 def render_sentiment(s: dict, badge: str) -> None:
-    with st.expander(f"🎯 Management Sentiment  ·  {badge}", expanded=True):
-        if not s:
-            st.info("No sentiment produced.")
-            return
-        label = s.get("label", "unknown")
-        icon = {"bullish": "🟢", "neutral": "⚪", "cautious": "🔴"}.get(label, "⚪")
-        st.markdown(f"**Tone:** {icon} `{label}`  ·  **score:** {s.get('score', '—')}")
-        st.markdown(f"_{s.get('rationale', '')}_")
-        drivers = s.get("drivers", []) or []
-        if drivers:
-            st.markdown("**Drivers:**")
-            for d in drivers:
-                st.markdown(f"- {d.get('driver', '')}")
-                _quote(d.get("quote", ""))
+    st.markdown(f"#### 🎯 Management Sentiment")
+    st.caption(badge)
+    if not s:
+        st.info("No sentiment produced.")
+        return
+    label = s.get("label", "unknown")
+    icon = {"bullish": "🟢", "neutral": "⚪", "cautious": "🔴"}.get(label, "⚪")
+    st.markdown(f"**Tone:** {icon} `{label}`  ·  **score:** {s.get('score', '—')}")
+    st.markdown(f"_{s.get('rationale', '')}_")
+    drivers = s.get("drivers", []) or []
+    if drivers:
+        st.markdown("**Drivers:**")
+        for d in drivers:
+            st.markdown(f"- {d.get('driver', '')}")
+            _quote(d.get("quote", ""))
 
 
 def render_qoq(q: dict, badge: str) -> None:
-    with st.expander(f"🔀 Quarter-over-Quarter  ·  {badge}", expanded=True):
-        if not q:
-            st.info("No comparison produced.")
-            return
-        if not q.get("comparison_available"):
-            st.info(q.get("narrative_shift", "No prior quarter available for comparison."))
-            return
-        st.markdown(
-            f"**{q.get('current_quarter', '')}** vs **{q.get('prior_quarter', '')}**"
-        )
-        st.markdown(f"_{q.get('narrative_shift', '')}_")
-        for mc in q.get("metric_changes", []) or []:
-            st.markdown(f"- **{mc.get('metric', '')}** — {mc.get('change', '')}")
-            _quote(f"current: {mc.get('quote_current', '')}")
-            _quote(f"prior: {mc.get('quote_prior', '')}")
-
-
-def render_scorecard(ev: dict) -> None:
-    if not ev:
+    st.markdown(f"#### 🔀 Quarter-over-Quarter")
+    st.caption(badge)
+    if not q:
+        st.info("No comparison produced.")
         return
-    st.markdown("### 🧪 Output Quality Evals")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Groundedness", f"{ev['groundedness']['score']:.2f}",
-              help="Fraction of quotes traceable to retrieved transcript text.")
-    c2.metric("Completeness", f"{ev['completeness']['score']:.2f}",
-              help="How many of the four analysis dimensions produced output.")
-    c3.metric("Consistency", f"{ev['consistency']['score']:.2f}",
-              help="QoQ references both quarters; sentiment agrees with guidance.")
-    c4.metric("Overall", f"{ev['overall']:.2f}")
-
-    with st.expander("Eval details"):
-        g = ev["groundedness"]
-        st.write(f"**Groundedness:** {g['supported']}/{g['total']} quotes supported.")
-        if g["unsupported"]:
-            st.write("Unsupported quotes:")
-            for q in g["unsupported"]:
-                st.caption(f"• {q}")
-        if ev["consistency"]["flags"]:
-            st.write("**Consistency flags:**")
-            for f in ev["consistency"]["flags"]:
-                st.caption(f"• {f}")
-        if ev["completeness"]["missing"]:
-            st.write("Missing dimensions: " + ", ".join(ev["completeness"]["missing"]))
-        if ev.get("judge"):
-            j = ev["judge"]
-            st.write(f"**LLM judge groundedness:** {j.get('groundedness', '—')}")
-            st.caption(j.get("rationale", ""))
+    if not q.get("comparison_available"):
+        st.info(q.get("narrative_shift", "No prior quarter available for comparison."))
+        return
+    st.markdown(f"**{q.get('current_quarter', '')}** vs **{q.get('prior_quarter', '')}**")
+    st.markdown(f"_{q.get('narrative_shift', '')}_")
+    for mc in q.get("metric_changes", []) or []:
+        st.markdown(f"- **{mc.get('metric', '')}** — {mc.get('change', '')}")
+        _quote(f"current: {mc.get('quote_current', '')}")
+        _quote(f"prior: {mc.get('quote_prior', '')}")
 
 
 def render_reasoning(steps: list[dict]) -> None:
@@ -204,78 +170,86 @@ def render_reasoning(steps: list[dict]) -> None:
             )
 
 
-def render_results(state: dict) -> None:
+def render_eval_details(ev: dict) -> None:
+    if not ev:
+        st.info("No eval available.")
+        return
+    g = ev["groundedness"]
+    st.write(f"**Groundedness:** {g['supported']}/{g['total']} quotes supported.")
+    if g["unsupported"]:
+        st.write("Unsupported quotes:")
+        for q in g["unsupported"]:
+            st.caption(f"• {q}")
+    if ev["consistency"]["flags"]:
+        st.write("**Consistency flags:**")
+        for f in ev["consistency"]["flags"]:
+            st.caption(f"• {f}")
+    if ev["completeness"]["missing"]:
+        st.write("Missing dimensions: " + ", ".join(ev["completeness"]["missing"]))
+    if ev.get("judge"):
+        j = ev["judge"]
+        st.write(f"**LLM judge groundedness:** {j.get('groundedness', '—')}")
+        st.caption(j.get("rationale", ""))
+
+
+def render_kpis(state: dict) -> None:
+    """A row of headline metric cards summarizing the quarter."""
     ev = state.get("eval") or {}
-    per_node = ev.get("per_node_groundedness", {}) if ev else {}
-    render_scorecard(ev)
+    s = state.get("sentiment") or {}
+    g = state.get("guidance") or {}
+    risks = (state.get("risks") or {}).get("risks", []) or []
+    new_risks = sum(1 for x in risks if x.get("is_new_or_escalating"))
+
+    c = st.columns(5)
+    label = (s.get("label") or "—")
+    c[0].metric("Sentiment", label.capitalize(), help=f"Tone score: {s.get('score', '—')}")
+    c[1].metric("Guidance", (g.get("direction") or "—").capitalize())
+    c[2].metric("Risks", len(risks), help=f"{new_risks} new/escalating")
+    ground = ev.get("groundedness", {}).get("score") if ev else None
+    c[3].metric("Groundedness", f"{ground:.0%}" if ground is not None else "—")
+    overall = ev.get("overall") if ev else None
+    c[4].metric("Overall eval", f"{overall:.2f}" if overall is not None else "—")
+
+
+def render_dashboard(state: dict, quarter_label: str, compact: bool = False) -> None:
+    """The main dashboard for a single quarter: KPIs + card grid + details."""
+    st.markdown(f"### {state.get('ticker', '')} · {quarter_label}")
+    render_kpis(state)
+    st.divider()
+
     if state.get("errors"):
         st.warning("Some steps had issues:\n" + "\n".join(f"- {e}" for e in state["errors"]))
-    render_guidance(state.get("guidance") or {}, grounding_badge(per_node.get("guidance")))
-    render_risks(state.get("risks") or {}, grounding_badge(per_node.get("risks")))
-    render_sentiment(state.get("sentiment") or {}, grounding_badge(per_node.get("sentiment")))
-    render_qoq(state.get("qoq") or {}, grounding_badge(per_node.get("qoq")))
+
+    ev = state.get("eval") or {}
+    per = ev.get("per_node_groundedness", {}) if ev else {}
+    guidance = (state.get("guidance") or {}, grounding_badge(per.get("guidance")))
+    risks = (state.get("risks") or {}, grounding_badge(per.get("risks")))
+    sentiment = (state.get("sentiment") or {}, grounding_badge(per.get("sentiment")))
+    qoq = (state.get("qoq") or {}, grounding_badge(per.get("qoq")))
+
+    if compact:
+        for fn, data in (
+            (render_guidance, guidance), (render_sentiment, sentiment),
+            (render_risks, risks), (render_qoq, qoq),
+        ):
+            with st.container(border=True):
+                fn(*data)
+    else:
+        left, right = st.columns(2)
+        with left:
+            with st.container(border=True):
+                render_guidance(*guidance)
+            with st.container(border=True):
+                render_sentiment(*sentiment)
+        with right:
+            with st.container(border=True):
+                render_risks(*risks)
+            with st.container(border=True):
+                render_qoq(*qoq)
+
+    with st.expander("🧪 Eval details"):
+        render_eval_details(ev)
     render_reasoning(state.get("reasoning") or [])
-
-
-# --- analysis orchestration -------------------------------------------------
-def analyze_quarter(ticker: str, year: int, quarter: str, live: bool = False) -> dict:
-    """Run (or reuse cached) analysis for one quarter."""
-    key = (ticker, year, quarter)
-    if key in st.session_state.results:
-        return st.session_state.results[key]
-
-    meta = st.session_state.ingest[ticker]
-    source, label = meta["source"], meta["source_label"]
-
-    if live:
-        placeholder = st.empty()
-        done: list[str] = []
-        final: dict = {}
-        for node_name, state in stream_analysis(ticker, year, quarter, source, label):
-            done.append(node_name)
-            final = state
-            lines = [
-                f"{'✅' if n in done else '⏳'} {NODE_LABELS[n]}" for n in NODE_ORDER
-            ]
-            placeholder.markdown("  \n".join(lines))
-        st.session_state.results[key] = final
-        return final
-
-    with st.spinner(f"Analyzing {quarter} {year}…"):
-        final = run_analysis(ticker, year, quarter, source, label)
-    st.session_state.results[key] = final
-    return final
-
-
-def ingest_ticker(ticker: str) -> None:
-    """Fetch + index earnings docs for a ticker, then analyze the latest quarter."""
-    router = SourceRouter()
-    with st.status(f"Fetching earnings data for {ticker}…", expanded=True) as status:
-        try:
-            result = router.fetch(ticker, config.NUM_QUARTERS)
-        except EdgarError as exc:
-            status.update(label="No data found", state="error")
-            st.error(str(exc))
-            return
-        st.write(result.note)
-        st.write(f"Retrieved {len(result.documents)} quarter(s). Indexing…")
-        vectorstore.ingest_documents(result.documents)
-        quarters = sorted(
-            {(d.year, d.quarter) for d in result.documents}, reverse=True
-        )
-        st.session_state.ingest[ticker] = {
-            "source": result.source,
-            "source_label": result.source_label,
-            "note": result.note,
-            "quarters": quarters,
-        }
-        status.update(label=f"Indexed {len(quarters)} quarter(s) for {ticker}", state="complete")
-
-    # Analyze the most recent quarter live.
-    if quarters:
-        year, quarter = quarters[0]
-        st.markdown("#### Pipeline")
-        analyze_quarter(ticker, year, quarter, live=True)
 
 
 # --- architecture view ------------------------------------------------------
@@ -298,7 +272,7 @@ digraph G {
   s [label="Sentiment node"];
   q [label="QoQ node"];
   e [label="Eval scorer\\n(groundedness / completeness / consistency)"];
-  ui [label="Streamlit UI\\n(panels + inline quotes + eval badges)", fillcolor="#22303f"];
+  ui [label="Streamlit dashboard\\n(KPIs + cards + inline quotes)", fillcolor="#22303f"];
 
   ticker -> router;
   router -> fmp   [label="ok"];
@@ -325,7 +299,7 @@ _ARCH_ASCII = """Ticker -> source_router --(ok)------> FMP transcript (incl. Q&A
    LangGraph agent (each node RAG-retrieves then calls Claude):
      Guidance -> Risk -> Sentiment -> QoQ -> Eval scorer
                                                                        v
-                     Streamlit UI: panels + inline source quotes + eval badges
+                     Streamlit dashboard: KPIs + cards + inline quotes
 """
 
 
@@ -334,7 +308,7 @@ def render_architecture() -> None:
     st.caption(
         "An agentic RAG pipeline: a multi-source ingestion router feeds a local "
         "vector store, a LangGraph agent runs four grounded analysis nodes, and an "
-        "eval layer scores the output — all rendered in a dark Streamlit UI."
+        "eval layer scores the output — all rendered in this dark dashboard."
     )
     try:
         st.graphviz_chart(_ARCH_DOT, use_container_width=True)
@@ -347,18 +321,15 @@ def render_architecture() -> None:
         st.markdown(
             "- **`source_router`** tries FMP for a real transcript, detects gating "
             "at runtime, and falls back to SEC EDGAR — **never mocks data**.\n"
-            "- **`fmp_client`** fetches transcript bodies and classifies gating "
-            "(HTTP 401/402/403, error bodies, or empty payloads).\n"
+            "- **`fmp_client`** fetches transcript bodies and classifies gating.\n"
             "- **`edgar_client`** resolves ticker→CIK, finds 8-K Item 2.02 filings, "
             "and extracts the Exhibit 99.1 earnings press release."
         )
         st.markdown("#### 2 · RAG (`ingest/`)")
         st.markdown(
-            "- **`chunker`** splits on speaker/section boundaries and tags each chunk "
-            "(`prepared_remarks` / `qa` / `press_release`).\n"
+            "- **`chunker`** splits on speaker/section boundaries and tags each chunk.\n"
             "- **`vectorstore`** is ChromaDB with the on-device **onnx MiniLM** "
-            "embedder — no embedding API, no cloud. One collection per company, "
-            "filtered by quarter."
+            "embedder — no embedding API, no cloud."
         )
     with col_b:
         st.markdown("#### 3 · Agent (`agent/`)")
@@ -366,111 +337,148 @@ def render_architecture() -> None:
             "- A **LangGraph `StateGraph`** runs nodes in sequence: "
             "**guidance → risk → sentiment → QoQ → eval**.\n"
             "- Each node retrieves quarter-scoped chunks (RAG) and calls Claude "
-            "(`claude-opus-4-8`) for **structured JSON**, backed by verbatim quotes.\n"
-            "- Reasoning steps (queries, sections, chunk counts) are surfaced in the UI."
+            "(`claude-opus-4-8`) for **structured JSON**, backed by verbatim quotes."
         )
         st.markdown("#### 4 · Eval + UI")
         st.markdown(
-            "- **Eval layer** scores *groundedness* (quotes must trace to retrieved "
-            "text), *completeness* (all four dimensions), and *consistency* (QoQ cites "
-            "both quarters; sentiment agrees with guidance), plus an optional "
-            "`claude-haiku-4-5` judge.\n"
-            "- **Streamlit UI** streams live pipeline progress, renders four panels "
-            "with inline quotes and grounding badges, and compares two quarters."
+            "- **Eval layer** scores *groundedness*, *completeness*, and *consistency*, "
+            "plus an optional `claude-haiku-4-5` judge.\n"
+            "- **Dashboard** streams live pipeline progress and renders KPI cards + "
+            "insight cards with inline quotes and grounding badges."
         )
-
-    st.markdown("#### Design notes")
     st.markdown(
-        "- **Honest data:** free FMP gates transcript bodies and EDGAR has no "
-        "transcripts, so free runs use 8-K press releases (no Q&A). The same code "
-        "**auto-upgrades** to full transcripts if a paid FMP key appears.\n"
-        "- **Resilience:** the Claude wrapper uses structured outputs when available "
-        "and falls back to prompt-JSON; API errors degrade to handled messages, not "
-        "crashes.\n"
-        "- **Cost:** shared per-quarter context is prompt-cached across the four "
-        "nodes (~0.1x input cost on nodes 2–4)."
-    )
-    st.markdown(
-        "**Stack:** Python 3.11 · Streamlit · LangGraph · Anthropic Claude "
-        "(`claude-opus-4-8` + `claude-haiku-4-5` judge) · ChromaDB (onnx MiniLM) · "
-        "Financial Modeling Prep + SEC EDGAR."
+        "**Stack:** Python 3.11 · Streamlit · LangGraph · Anthropic Claude · "
+        "ChromaDB (onnx MiniLM) · Financial Modeling Prep + SEC EDGAR."
     )
 
 
-def render_analyzer() -> None:
-    missing = config.missing_keys()
+# --- analysis orchestration -------------------------------------------------
+def analyze_quarter(ticker: str, year: int, quarter: str, live: bool = False) -> dict:
+    """Run (or reuse cached) analysis for one quarter."""
+    key = (ticker, year, quarter)
+    if key in st.session_state.results:
+        return st.session_state.results[key]
+
+    meta = st.session_state.ingest[ticker]
+    source, label = meta["source"], meta["source_label"]
+
+    if live:
+        placeholder = st.empty()
+        done: list[str] = []
+        final: dict = {}
+        for node_name, state in stream_analysis(ticker, year, quarter, source, label):
+            done.append(node_name)
+            final = state
+            lines = [f"{'✅' if n in done else '⏳'} {NODE_LABELS[n]}" for n in NODE_ORDER]
+            placeholder.markdown("  \n".join(lines))
+        st.session_state.results[key] = final
+        return final
+
+    with st.spinner(f"Analyzing {quarter} {year}…"):
+        final = run_analysis(ticker, year, quarter, source, label)
+    st.session_state.results[key] = final
+    return final
+
+
+def ingest_ticker(ticker: str) -> None:
+    """Fetch + index earnings docs for a ticker, then analyze the latest quarter."""
+    router = SourceRouter()
+    with st.status(f"Analyzing {ticker}…", expanded=True) as status:
+        try:
+            result = router.fetch(ticker, config.NUM_QUARTERS)
+        except EdgarError as exc:
+            status.update(label="No data found", state="error")
+            st.error(str(exc))
+            return
+        st.write(result.note)
+        st.write(f"Retrieved {len(result.documents)} quarter(s). Indexing…")
+        vectorstore.ingest_documents(result.documents)
+        quarters = sorted({(d.year, d.quarter) for d in result.documents}, reverse=True)
+        st.session_state.ingest[ticker] = {
+            "source": result.source,
+            "source_label": result.source_label,
+            "note": result.note,
+            "quarters": quarters,
+        }
+        st.session_state["sel_company"] = ticker  # make the new ticker active
+        if quarters:
+            st.write("Running analysis pipeline:")
+            year, quarter = quarters[0]
+            analyze_quarter(ticker, year, quarter, live=True)
+        status.update(label=f"{ticker} ready", state="complete", expanded=False)
+
+
+def render_empty_state() -> None:
+    st.markdown("## 👋 Welcome to the Earnings Call Analyzer")
+    st.markdown(
+        "Enter a stock ticker in the **sidebar** and click **Analyze** to build a "
+        "dashboard of guidance, risks, sentiment, and quarter-over-quarter changes — "
+        "each grounded in source quotes and scored by an eval layer."
+    )
+    st.markdown("**Try:**  `AAPL` · `MSFT` · `NVDA` · `AMZN` · `GOOGL`")
+    st.info(
+        "Free EDGAR mode analyzes real 8-K earnings press releases (prepared remarks, "
+        "no analyst Q&A). Add a paid FMP key later for full transcripts + Q&A — no code "
+        "change needed."
+    )
+
+
+# --- sidebar + page ---------------------------------------------------------
+with st.sidebar:
+    st.markdown("## 📊 Earnings Call Analyzer")
+    st.caption("Agentic RAG · LangGraph · Claude · ChromaDB")
+    page = st.radio("View", ["Dashboard", "Architecture"], label_visibility="collapsed")
+    st.divider()
+    with st.form("ticker_form"):
+        ticker_in = st.text_input("Stock ticker", placeholder="AAPL, MSFT, NVDA…")
+        submitted = st.form_submit_button("▶  Analyze", use_container_width=True)
+
+missing = config.missing_keys()
+
+if page == "Architecture":
+    render_architecture()
+else:
     if missing:
         st.error(
             "Missing required environment variable(s): "
             + ", ".join(missing)
-            + ". Copy `.env.example` to `.env` and fill in your keys, then restart."
+            + ". On Streamlit Cloud add them under Settings → Secrets; locally copy "
+            "`.env.example` to `.env`."
         )
 
-    with st.form("ticker_form"):
-        col1, col2 = st.columns([3, 1])
-        ticker_in = col1.text_input(
-            "Stock ticker", value="", placeholder="AAPL, MSFT, NVDA…"
-        )
-        submitted = col2.form_submit_button("Analyze", use_container_width=True)
-
-    if submitted and ticker_in.strip():
-        if missing:
-            st.stop()
+    if submitted and ticker_in.strip() and not missing:
         ingest_ticker(ticker_in.strip().upper())
 
     if not st.session_state.ingest:
-        return
+        render_empty_state()
+    else:
+        with st.sidebar:
+            companies = sorted(st.session_state.ingest.keys())
+            active = st.selectbox("Company", companies, key="sel_company")
+            meta = st.session_state.ingest[active]
+            quarters = meta["quarters"]
+            labels = [f"{qq} {yy}" for (yy, qq) in quarters]
+            pick = st.selectbox("Quarter", labels, key=f"q_{active}")
+            compare = st.checkbox("Compare a 2nd quarter", key=f"cmp_{active}")
+            pick2 = None
+            if compare and len(quarters) > 1:
+                others = [lbl for lbl in labels if lbl != pick]
+                pick2 = st.selectbox("Compare against", others, key=f"q2_{active}")
+            st.divider()
+            badge = "🟩" if meta["source"] == "fmp_transcript" else "🟦"
+            st.caption(f"{badge} **Source:** {meta['source_label']}")
+            st.caption(meta["note"])
 
-    ticker = st.selectbox(
-        "Company", sorted(st.session_state.ingest.keys()), key="active_ticker"
-    )
-    meta = st.session_state.ingest[ticker]
-    quarters = meta["quarters"]
-
-    badge_color = "🟩" if meta["source"] == "fmp_transcript" else "🟦"
-    st.info(f"{badge_color} **Source:** {meta['source_label']}  \n{meta['note']}")
-
-    tab_single, tab_compare = st.tabs(["📄 Single quarter", "🔀 Compare two quarters"])
-
-    with tab_single:
-        labels = [f"{q} {y}" for (y, q) in quarters]
-        pick = st.selectbox("Quarter", labels, key=f"single_{ticker}")
         y, q = quarters[labels.index(pick)]
-        state = analyze_quarter(ticker, y, q, live=False)
-        render_results(state)
-
-    with tab_compare:
-        if len(quarters) < 2:
-            st.info("Need at least two indexed quarters to compare.")
+        if compare and pick2:
+            y2, q2 = quarters[labels.index(pick2)]
+            state_a = analyze_quarter(active, y, q)
+            state_b = analyze_quarter(active, y2, q2)
+            col_a, col_b = st.columns(2)
+            with col_a:
+                render_dashboard(state_a, pick, compact=True)
+            with col_b:
+                render_dashboard(state_b, pick2, compact=True)
         else:
-            labels = [f"{q} {y}" for (y, q) in quarters]
-            ca, cb = st.columns(2)
-            pa = ca.selectbox("Quarter A", labels, index=0, key=f"cmpA_{ticker}")
-            pb = cb.selectbox("Quarter B", labels, index=1, key=f"cmpB_{ticker}")
-            if st.button("Compare", use_container_width=True):
-                ya, qa = quarters[labels.index(pa)]
-                yb, qb = quarters[labels.index(pb)]
-                state_a = analyze_quarter(ticker, ya, qa)
-                state_b = analyze_quarter(ticker, yb, qb)
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.subheader(pa)
-                    render_results(state_a)
-                with col_b:
-                    st.subheader(pb)
-                    render_results(state_b)
-
-
-# --- page -------------------------------------------------------------------
-st.title("📊 Earnings Call Analyzer")
-st.caption(
-    "Agentic RAG over earnings calls — LangGraph + Claude + ChromaDB. "
-    "Extracts guidance, risks, sentiment, and quarter-over-quarter changes, "
-    "each grounded in source quotes and scored by an eval layer."
-)
-
-tab_analyzer, tab_arch = st.tabs(["🔍 Analyzer", "🏗️ Architecture"])
-with tab_analyzer:
-    render_analyzer()
-with tab_arch:
-    render_architecture()
+            state = analyze_quarter(active, y, q)
+            render_dashboard(state, pick)
