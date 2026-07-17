@@ -9,7 +9,7 @@
 #   * First run downloads the MiniLM model (~90MB).
 
 streamlit==1.40.2
-langgraph==0.2.60
+langgraph==1.2.9
 langchain-core==0.3.28
 chromadb==0.5.23
 anthropic>=0.69.0
