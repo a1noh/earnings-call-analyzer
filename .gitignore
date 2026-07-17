@@ -1,0 +1,23 @@
+# Environment / secrets
+.env
+
+# Virtualenv
+venv/
+.venv/
+
+# Vector store (regenerated at runtime)
+chroma_db/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Installer artifacts
+*.msi
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
