@@ -10,7 +10,7 @@
 
 streamlit==1.40.2
 langgraph==0.2.60
-langchain-core==0.3.28
+langchain-core==0.3.86
 chromadb==0.5.23
 anthropic>=0.69.0
 requests==2.32.3
