@@ -122,7 +122,13 @@ def structured_call(
             messages=messages,
         )
         return _json_from_text(_text_from_response(resp))
+    except ClaudeError:
+        raise
     except anthropic.APIError as exc:
-        # Auth, not-found, rate-limit, overloaded, etc. -> handled ClaudeError so
-        # the graph degrades gracefully instead of crashing.
+        # Auth, not-found, rate-limit, overloaded, etc.
         raise ClaudeError(f"Claude API error: {exc}") from exc
+    except Exception as exc:
+        # Anything else (e.g. a non-ASCII character in the API key breaking
+        # header encoding) -> handled ClaudeError so the graph degrades
+        # gracefully instead of crashing the whole app.
+        raise ClaudeError(f"Claude request failed: {exc}") from exc

@@ -16,11 +16,20 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 load_dotenv(PROJECT_ROOT / ".env")
 
 # --- Secrets (read from environment; never hardcode) ------------------------
-ANTHROPIC_API_KEY: str | None = os.getenv("ANTHROPIC_API_KEY")
-FMP_API_KEY: str | None = os.getenv("FMP_API_KEY")
-SEC_USER_AGENT: str = os.getenv(
-    "SEC_USER_AGENT", "EarningsCallAnalyzer example@example.com"
-)
+def _clean(value: str | None) -> str | None:
+    """Strip stray whitespace (incl. non-breaking spaces) from a secret value.
+
+    Copy-pasted keys often carry an invisible trailing space or newline that
+    breaks HTTP header encoding; this makes reads robust to that.
+    """
+    return value.strip() if value else value
+
+
+ANTHROPIC_API_KEY: str | None = _clean(os.getenv("ANTHROPIC_API_KEY"))
+FMP_API_KEY: str | None = _clean(os.getenv("FMP_API_KEY"))
+SEC_USER_AGENT: str = _clean(
+    os.getenv("SEC_USER_AGENT", "EarningsCallAnalyzer example@example.com")
+) or "EarningsCallAnalyzer example@example.com"
 
 # --- Models -----------------------------------------------------------------
 # Primary analysis model for the four LangGraph nodes.

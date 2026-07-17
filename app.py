@@ -28,7 +28,9 @@ try:
         "APP_PASSWORD", "ANALYSIS_MODEL", "JUDGE_MODEL",
     ):
         if _k in st.secrets and not os.environ.get(_k):
-            os.environ[_k] = str(st.secrets[_k])
+            # .strip() drops stray whitespace (incl. non-breaking spaces from
+            # copy-paste) that would otherwise break HTTP header encoding.
+            os.environ[_k] = str(st.secrets[_k]).strip()
 except Exception:
     pass  # no secrets configured (e.g. local dev without a secrets.toml)
 
